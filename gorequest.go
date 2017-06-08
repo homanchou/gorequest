@@ -937,6 +937,28 @@ func (s *SuperAgent) End(callback ...func(response Response, body string, errs [
 	return resp, bodyString, errs
 }
 
+// EndResponse should be used when you are downloading a huge file and you don't want the body to be converted to a string, instead you want the reader
+// This returns the Response only, does not do callbacks, if you use resp.Body you must close it yourself
+func (s *SuperAgent) EndResponse() (Response, []error) {
+	var (
+		errs []error
+		resp Response
+	)
+
+	for {
+		resp, errs = s.getResponse()
+		if errs != nil {
+			return nil, errs
+		}
+		if s.isRetryableRequest(resp) {
+			resp.Header.Set("Retry-Count", strconv.Itoa(s.Retryable.Attempt))
+			break
+		}
+	}
+
+	return resp, nil
+}
+
 // EndBytes should be used when you want the body as bytes. The callbacks work the same way as with `End`, except that a byte array is used instead of a string.
 func (s *SuperAgent) EndBytes(callback ...func(response Response, body []byte, errs []error)) (Response, []byte, []error) {
 	var (
@@ -1000,6 +1022,19 @@ func (s *SuperAgent) EndStruct(v interface{}, callback ...func(response Response
 }
 
 func (s *SuperAgent) getResponseBytes() (Response, []byte, []error) {
+	resp, errs := s.getResponse()
+	if errs != nil {
+		return nil, nil, errs
+	}
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+	// Reset resp.Body so it can be use again
+	resp.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+
+	return resp, body, nil
+}
+
+func (s *SuperAgent) getResponse() (Response, []error) {
 	var (
 		req  *http.Request
 		err  error
@@ -1007,7 +1042,7 @@ func (s *SuperAgent) getResponseBytes() (Response, []byte, []error) {
 	)
 	// check whether there is an error. if yes, return all errors
 	if len(s.Errors) != 0 {
-		return nil, nil, s.Errors
+		return nil, s.Errors
 	}
 	// check if there is forced type
 	switch s.ForceType {
@@ -1032,7 +1067,7 @@ func (s *SuperAgent) getResponseBytes() (Response, []byte, []error) {
 	req, err = s.MakeRequest()
 	if err != nil {
 		s.Errors = append(s.Errors, err)
-		return nil, nil, s.Errors
+		return nil, s.Errors
 	}
 
 	// Set Transport
@@ -1066,9 +1101,8 @@ func (s *SuperAgent) getResponseBytes() (Response, []byte, []error) {
 	resp, err = s.Client.Do(req)
 	if err != nil {
 		s.Errors = append(s.Errors, err)
-		return nil, nil, s.Errors
+		return nil, s.Errors
 	}
-	defer resp.Body.Close()
 
 	// Log details of this response
 	if s.Debug {
@@ -1080,11 +1114,7 @@ func (s *SuperAgent) getResponseBytes() (Response, []byte, []error) {
 		}
 	}
 
-	body, _ := ioutil.ReadAll(resp.Body)
-	// Reset resp.Body so it can be use again
-	resp.Body = ioutil.NopCloser(bytes.NewBuffer(body))
-
-	return resp, body, nil
+	return resp, nil
 }
 
 func (s *SuperAgent) MakeRequest() (*http.Request, error) {
